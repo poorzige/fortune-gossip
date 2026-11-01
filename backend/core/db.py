@@ -6,7 +6,8 @@ import sqlite3
 import threading
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(_BACKEND_DIR, "data", "divination.db")
+# DB_PATH 可指向挂载卷（容器部署时把数据放宿主机上），默认 backend/data/divination.db
+DB_PATH = os.environ.get("DB_PATH") or os.path.join(_BACKEND_DIR, "data", "divination.db")
 
 _lock = threading.Lock()
 

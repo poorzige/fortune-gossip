@@ -16,6 +16,7 @@ const state = {
   spins: [0, 0, 0],
   providers: [],
   llm: null,          // 后端脱敏后的模型配置
+  byok: null,         // 访客自带 Key（仅存 localStorage）
   aiBusy: false,
 };
 
@@ -75,6 +76,7 @@ async function boot() {
     state.meta = await api("meta");
     state.llm = state.meta.llm;
     state.providers = state.meta.providers || [];
+    state.byok = loadByok();
   } catch (e) {
     state.llm = { configured: false, locked: false };
     applyLLMLock();
@@ -554,15 +556,50 @@ function renderInterp(plate) {
 
 /* --- AI 解卦 --- */
 
-function aiToolbar(conf, hasText) {
-  if (!conf || !conf.configured) return "";
+/* 访客自带 Key：只存在浏览器 localStorage，随请求转发，服务器不落库 */
+const BYOK_STORE = "bagua.byok";
+
+function loadByok() {
+  try {
+    const v = JSON.parse(localStorage.getItem(BYOK_STORE) || "null");
+    return v && v.base_url && v.model && v.api_key ? v : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveByok(v) {
+  try { localStorage.setItem(BYOK_STORE, JSON.stringify(v)); } catch (e) { /* 隐私模式忽略 */ }
+  state.byok = v;
+}
+
+function clearByok() {
+  try { localStorage.removeItem(BYOK_STORE); } catch (e) { /* ignore */ }
+  state.byok = null;
+}
+
+function aiToolbar(hasText) {
+  const conf = state.llm || {};
+  if (conf.locked) {
+    if (!state.byok) return "";
+    return `
+      <div class="ai-toolbar">
+        <span class="ai-model"><i class="dot"></i><em>${esc(state.byok.model)}</em>
+          <span>· 我的 Key</span></span>
+        <div class="ai-actions">
+          ${hasText ? `<button class="btn small ghost" id="btnAIRegen">重新解读</button>` : ""}
+          <button class="btn small ghost" id="btnAISettings">更换 Key</button>
+        </div>
+      </div>`;
+  }
+  if (!conf.configured) return "";
   return `
     <div class="ai-toolbar">
       <span class="ai-model"><i class="dot"></i><em>${esc(conf.model || "未命名模型")}</em>
         <span>· ${esc(conf.provider || "自定义接口")}</span></span>
       <div class="ai-actions">
         ${hasText ? `<button class="btn small ghost" id="btnAIRegen">重新解读</button>` : ""}
-        ${conf.locked ? "" : `<button class="btn small ghost" id="btnAISettings">更换模型</button>`}
+        <button class="btn small ghost" id="btnAISettings">更换模型</button>
       </div>
     </div>`;
 }
@@ -579,29 +616,44 @@ function renderAIDefault(plate, savedText) {
   const conf = state.llm || {};
 
   if (savedText) {
-    body.innerHTML = aiToolbar(conf, true) +
+    body.innerHTML = aiToolbar(true) +
       `<div class="ai-stream">${mdLite(savedText)}</div>`;
     bindAIToolbar();
     return;
   }
 
+  // 公开部署：访客自带 Key
+  if (conf.locked) {
+    if (state.byok) {
+      body.innerHTML = aiToolbar(false) + `
+        <div class="ai-body-default">
+          <button class="btn primary" id="btnAI">求 AI 解卦</button>
+          <div class="ai-note">用你浏览器里保存的 <b>${esc(state.byok.model)}</b> 生成解读；
+            Key 只随这一次请求转发给服务商，不写入服务器。</div>
+        </div>`;
+      $("#btnAI").addEventListener("click", requestAI);
+      bindAIToolbar();
+    } else {
+      body.innerHTML = `
+        <div class="ai-body-default">
+          <div class="ai-note">本站不提供公共模型，但你可以用<b>自己的 API Key</b> 解卦 ——
+            支持任意 OpenAI 兼容接口（DeepSeek、智谱、Kimi、通义、OpenAI …）。<br>
+            Key 只保存在这台浏览器，随请求临时转发，不写入服务器。</div>
+          <div style="margin-top:16px"><button class="btn primary" id="btnAIConfig">接 入 我 的 Key</button></div>
+        </div>`;
+      $("#btnAIConfig").addEventListener("click", openLLM);
+    }
+    return;
+  }
+
   if (conf.configured) {
-    body.innerHTML = aiToolbar(conf, false) + `
+    body.innerHTML = aiToolbar(false) + `
       <div class="ai-body-default">
         <button class="btn primary" id="btnAI">求 AI 解卦</button>
         <div class="ai-note">结合整张卦盘、卦爻辞与规则分析，由 <b>${esc(conf.model)}</b> 生成四节解读。</div>
       </div>`;
     $("#btnAI").addEventListener("click", requestAI);
     bindAIToolbar();
-    return;
-  }
-
-  if (conf.locked) {
-    body.innerHTML = `
-      <div class="ai-body-default">
-        <div class="ai-note">本站未开启 AI 解卦，排盘与规则断语不受影响。<br>
-        想用 AI 解读，可以把项目跑在本地，在右上角「模型接入」里填自己的 Key。</div>
-      </div>`;
     return;
   }
 
@@ -629,7 +681,7 @@ async function requestAI() {
     + `　模型排队与思考可能需要一两分钟`;
   stream.appendChild(waiting);
 
-  body.innerHTML = aiToolbar(state.llm || {}, false);
+  body.innerHTML = aiToolbar(false);
   body.appendChild(stream);
   bindAIToolbar();
 
@@ -639,10 +691,12 @@ async function requestAI() {
   const THINK_RE = /\x01T(\d+)/g;
 
   try {
+    const reqBody = { record_id: state.recordId };
+    if (state.llm && state.llm.locked && state.byok) reqBody.byok = state.byok;
     const resp = await fetch(`${API}/interpret/llm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ record_id: state.recordId }),
+      body: JSON.stringify(reqBody),
     });
     if (!resp.ok) {
       const j = await resp.json().catch(() => ({}));
@@ -735,36 +789,61 @@ function updateLLMChip() {
   const txt = $("#llmChipText");
   const conf = state.llm || {};
   chip.classList.remove("ok", "off");
+
+  if (conf.locked) {
+    if (state.byok) {
+      chip.classList.add("ok");
+      txt.textContent = `我的 Key · ${state.byok.model}`;
+    } else {
+      chip.classList.add("off");
+      txt.textContent = "AI 需自带 Key";
+    }
+    return;
+  }
+
   if (conf.configured) {
     chip.classList.add("ok");
-    txt.textContent = conf.locked
-      ? `AI 已开启 · ${conf.model || ""}`
-      : `${conf.provider || "模型"} · ${conf.model || ""}`;
+    txt.textContent = `${conf.provider || "模型"} · ${conf.model || ""}`;
   } else {
     chip.classList.add("off");
-    txt.textContent = conf.locked ? "AI 未开启" : "未接入模型";
+    txt.textContent = "未接入模型";
   }
 }
 
-/* 公开部署时后端会锁掉模型配置，前端相应地收起入口 */
+/* 公开部署：模型由访客自带，入口改成「接入我的 Key」 */
 function applyLLMLock() {
   const locked = !!(state.llm && state.llm.locked);
   const btn = $("#btnOpenLLM");
-  if (btn) btn.style.display = locked ? "none" : "";
+  if (btn) {
+    const label = btn.querySelector("span");
+    if (label) label.textContent = locked ? "接入我的 Key" : "模型接入";
+  }
   const chip = $("#llmChip");
-  if (chip) chip.title = locked ? "本站模型由站长统一配置" : "查看或更换已接入的模型";
+  if (chip) chip.title = locked ? "用你自己的 API Key 解卦" : "查看或更换已接入的模型";
+}
+
+function isByokMode() {
+  return !!(state.llm && state.llm.locked);
 }
 
 function openLLM() {
-  if (state.llm && state.llm.locked) {
-    toast("本站的模型由站长统一配置，不开放修改");
-    return;
-  }
+  const byokMode = isByokMode();
   const modal = $("#llmModal");
   modal.classList.add("open");
   modal.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
-  fillLLMForm(state.llm || {});
+
+  $("#llmTitle").textContent = byokMode ? "接入我的 API Key" : "接入大模型";
+  const sub = $("#llmModal .modal-sub");
+  if (sub) {
+    sub.innerHTML = byokMode
+      ? "Key 只保存在这台浏览器，随请求临时转发给服务商，服务器不落库、不回传。"
+      : '任何 OpenAI 兼容接口均可。配置保存在本机 <code>backend/config.json</code>，密钥不回传浏览器。';
+  }
+  $("#llmSave").textContent = byokMode ? "保存到本机" : "保存并启用";
+  $("#llmFetchModels").style.display = byokMode ? "none" : "";
+
+  fillLLMForm(byokMode ? (state.byok || {}) : (state.llm || {}));
   renderProviders();
   setLLMMsg("");
   setTimeout(() => $("#llmBase").focus(), 120);
@@ -780,7 +859,8 @@ function closeLLM() {
 function renderProviders() {
   const grid = $("#providerGrid");
   if (!state.providers.length) { grid.innerHTML = ""; return; }
-  const current = normalizeUrl($("#llmBase").value || (state.llm || {}).base_url || "");
+  const fallback = isByokMode() ? "" : (state.llm || {}).base_url;
+  const current = normalizeUrl($("#llmBase").value || fallback || "");
   grid.innerHTML = state.providers.map((p) => {
     const active = p.base_url && current && normalizeUrl(p.base_url) === current;
     return `<button type="button" class="provider-chip${active ? " active" : ""}"
@@ -798,11 +878,10 @@ function renderProviders() {
       if (p.id === "ollama") {
         $("#llmKey").placeholder = "本地服务通常无需 Key，可留空";
       } else {
-        $("#llmKey").placeholder = state.llm && state.llm.has_key
-          ? `已保存的密钥（留空保持不变）`
-          : "填写 API Key";
-        $("#llmKeyHint").textContent = state.llm && state.llm.has_key
-          ? `已保存密钥 ${state.llm.api_key_masked}，切换服务商时请填写新的 Key`
+        const mask = currentSavedKeyMask();
+        $("#llmKey").placeholder = mask ? `已保存的密钥（留空保持不变）` : "填写 API Key";
+        $("#llmKeyHint").textContent = mask
+          ? `已保存密钥 ${mask}，切换服务商时请填写新的 Key`
           : "尚未保存密钥";
       }
     });
@@ -813,18 +892,32 @@ function normalizeUrl(u) {
   return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
+function maskKey(key) {
+  const s = String(key || "");
+  if (s.length <= 8) return s.slice(0, 1) + "****";
+  return `${s.slice(0, 4)}******${s.slice(-4)}`;
+}
+
+function currentSavedKeyMask() {
+  if (isByokMode()) return state.byok && state.byok.api_key ? maskKey(state.byok.api_key) : "";
+  return state.llm && state.llm.has_key ? state.llm.api_key_masked : "";
+}
+
 function fillLLMForm(conf) {
+  const byokMode = isByokMode();
+  const savedMask = currentSavedKeyMask();
+
   $("#llmBase").value = conf.base_url || "";
   $("#llmModel").value = conf.model || "";
   $("#llmKey").value = "";
   $("#llmKey").type = "password";
   $("#llmEye").textContent = "显示";
-  $("#llmKey").placeholder = conf.has_key
-    ? `已保存 ${conf.api_key_masked}（留空保持不变）`
-    : "填写 API Key（本地 Ollama 可留空）";
-  $("#llmKeyHint").textContent = conf.has_key
-    ? `已保存密钥 ${conf.api_key_masked}，不会回传到浏览器`
-    : "尚未保存密钥";
+  $("#llmKey").placeholder = savedMask
+    ? `已保存 ${savedMask}（留空保持不变）`
+    : (byokMode ? "填写你的 API Key" : "填写 API Key（本地 Ollama 可留空）");
+  $("#llmKeyHint").textContent = byokMode
+    ? (savedMask ? `Key 只存在这台浏览器：${savedMask}` : "Key 只存在这台浏览器，不上传服务器存储")
+    : (savedMask ? `已保存密钥 ${savedMask}，不会回传到浏览器` : "尚未保存密钥");
   $("#llmKeyHint").className = "field-hint";
 
   const temp = conf.temperature ?? 0.7;
@@ -864,6 +957,23 @@ async function saveLLM() {
   const payload = llmFormValues();
   if (!payload.base_url) { setLLMMsg("请填写接口地址", "err"); return; }
   if (!payload.model) { setLLMMsg("请填写模型名称", "err"); return; }
+
+  // 公开部署：Key 存浏览器，不碰服务器
+  if (isByokMode()) {
+    const key = $("#llmKey").value.trim() || (state.byok && state.byok.api_key) || "";
+    if (!key) { setLLMMsg("请填写 API Key", "err"); return; }
+    const v = { base_url: payload.base_url, model: payload.model, api_key: key };
+    if (payload.max_tokens) v.max_tokens = payload.max_tokens;
+    saveByok(v);
+    updateLLMChip();
+    setLLMMsg("已保存到这台浏览器，可以解卦了", "ok");
+    toast("已接入你的 Key");
+    $("#llmKey").value = "";
+    fillLLMForm(v);
+    if (state.plate) renderAIDefault(state.plate, state.aiSavedText);
+    return;
+  }
+
   const btn = $("#llmSave");
   btn.disabled = true;
   setLLMMsg("保存中……", "busy");
@@ -890,11 +1000,20 @@ async function testLLM() {
     setLLMMsg("先填写接口地址与模型名称再测试", "err");
     return;
   }
+  const byokMode = isByokMode();
+  if (byokMode) {
+    const key = $("#llmKey").value.trim() || (state.byok && state.byok.api_key) || "";
+    if (!key) { setLLMMsg("请先填写 API Key 再测试", "err"); return; }
+  }
+
   const btn = $("#llmTest");
   btn.disabled = true;
   setLLMMsg("正在连接模型……", "busy");
   try {
-    const r = await api("llm/test", { method: "POST", body: JSON.stringify(payload) });
+    const body = byokMode
+      ? { byok: { ...payload, api_key: $("#llmKey").value.trim() || (state.byok && state.byok.api_key) } }
+      : payload;
+    const r = await api("llm/test", { method: "POST", body: JSON.stringify(body) });
     if (r.ok) {
       setLLMMsg(`连接成功 · ${r.latency_ms}ms · 模型回复「${r.reply || "（空）"}」`, "ok");
     } else {
@@ -908,6 +1027,7 @@ async function testLLM() {
 }
 
 async function fetchModels() {
+  if (isByokMode()) { setLLMMsg("公开站不提供模型列表，填你服务商文档里的模型名即可", "err"); return; }
   const base = $("#llmBase").value.trim();
   if (!base) { setLLMMsg("请先填写接口地址", "err"); return; }
   const btn = $("#llmFetchModels");

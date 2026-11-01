@@ -12,10 +12,13 @@ config.json 既可以直接手改，也可以由前端「模型接入」面板�
   fetch_models(...)        拉取 /models 模型列表
   stream_chat(messages)    SSE 流式对话
 """
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -173,6 +176,72 @@ def is_configured():
     return bool(conf["api_key"]) or _is_local(conf["base_url"])
 
 
+# ---------------- 访客自带 Key（BYOK） ----------------
+
+def assert_public_endpoint(base_url):
+    """公开部署时访客可以填任意接口地址，必须挡住内网地址。
+
+    否则我们的服务器就成了 SSRF 跳板：能摸到 127.0.0.1 上的服务、
+    局域网设备、以及 169.254.169.254 这种云厂商元数据接口。
+    """
+    parsed = urlparse(base_url or "")
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError("接口地址必须以 http:// 或 https:// 开头")
+    host = parsed.hostname
+    if not host:
+        raise RuntimeError("接口地址格式不正确")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise RuntimeError(f"无法解析域名 {host}，请检查接口地址")
+    for info in infos:
+        raw_ip = str(info[4][0]).split("%")[0]
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            raise RuntimeError("出于安全考虑，公开部署只允许访问公网接口，不支持内网或本机地址")
+
+
+def byok_config(data):
+    """把访客传来的 {base_url, api_key, model, max_tokens?} 变成一次性配置。"""
+    if not isinstance(data, dict):
+        raise RuntimeError("缺少模型配置")
+    base = normalize_base_url(data.get("base_url"))
+    key = str(data.get("api_key") or "").strip()
+    model = str(data.get("model") or "").strip()
+    if not base:
+        raise RuntimeError("请填写接口地址 Base URL")
+    if not model:
+        raise RuntimeError("请填写模型名称")
+    if not key:
+        raise RuntimeError("请填写 API Key")
+    if len(key) > 400:
+        raise RuntimeError("API Key 格式不正确")
+    assert_public_endpoint(base)
+
+    conf = dict(DEFAULTS)
+    conf.update({
+        "base_url": base,
+        "api_key": key,
+        "model": model[:120],
+        "temperature": 0.7,
+        "max_tokens": 8192,
+        "disable_thinking": True,
+    })
+    if data.get("max_tokens"):
+        try:
+            conf["max_tokens"] = min(max(int(data["max_tokens"]), 64), 200000)
+        except (TypeError, ValueError):
+            pass
+    return conf
+
+
 def save_config(patch):
     """把前端表单写进 config.json。
 
@@ -254,10 +323,11 @@ def _net_opts(base_url):
     return {}
 
 
-def _post(url, payload, headers, timeout=(15, 300), base_url=None):
+def _post(url, payload, headers, timeout=(15, 300), base_url=None, allow_redirects=True):
     # ensure_ascii=False：默认 JSON 会把每个汉字转 6 字节转义，体积翻倍且更易被中间设备掐断
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return requests.post(url, data=body, headers=headers, stream=True, timeout=timeout,
+                         allow_redirects=allow_redirects,
                          **_net_opts(base_url or url))
 
 
@@ -281,7 +351,8 @@ def _error_text(status, body):
     return f"{hint}（HTTP {status}）" + (f"：{detail}" if detail else "")
 
 
-def _chat_request(conf, messages, stream=True, max_tokens=None, timeout=(15, 300)):
+def _chat_request(conf, messages, stream=True, max_tokens=None, timeout=(15, 300),
+                  allow_redirects=True):
     url = _endpoint(conf["base_url"], "/chat/completions")
     payload = {
         "model": conf["model"],
@@ -296,7 +367,8 @@ def _chat_request(conf, messages, stream=True, max_tokens=None, timeout=(15, 300
 
     def send():
         try:
-            return _post(url, payload, headers, timeout=timeout, base_url=conf["base_url"])
+            return _post(url, payload, headers, timeout=timeout, base_url=conf["base_url"],
+                         allow_redirects=allow_redirects)
         except requests.exceptions.Timeout:
             raise RuntimeError("连接模型接口超时，请检查网络或换一个服务商")
         except requests.exceptions.ConnectionError:
@@ -314,25 +386,31 @@ def _chat_request(conf, messages, stream=True, max_tokens=None, timeout=(15, 300
 
 # ---------------- 连通性测试 / 模型列表 ----------------
 
-def test_connection(patch=None):
-    """用（可能尚未保存的）表单值发一次最小请求，返回 {ok, ...} 而非抛异常。"""
-    conf = dict(load_config())
-    if isinstance(patch, dict):
-        if "base_url" in patch and not str(patch.get("base_url") or "").strip():
-            return {"ok": False, "error": "请先填写接口地址"}
-        if "model" in patch and not str(patch.get("model") or "").strip():
-            return {"ok": False, "error": "请先填写模型名称"}
-        if str(patch.get("base_url") or "").strip():
-            conf["base_url"] = normalize_base_url(patch["base_url"])
-        if str(patch.get("api_key") or "").strip():
-            conf["api_key"] = str(patch["api_key"]).strip()
-        if str(patch.get("model") or "").strip():
-            conf["model"] = str(patch["model"]).strip()
-        if patch.get("max_tokens"):
-            try:
-                conf["max_tokens"] = int(patch["max_tokens"])
-            except (TypeError, ValueError):
-                pass
+def test_connection(patch=None, conf=None, allow_redirects=True):
+    """用（可能尚未保存的）表单值发一次最小请求，返回 {ok, ...} 而非抛异常。
+
+    conf 直接给一份完整配置时（访客自带 Key），不再读本机 config.json。
+    """
+    if conf is None:
+        conf = dict(load_config())
+        if isinstance(patch, dict):
+            if "base_url" in patch and not str(patch.get("base_url") or "").strip():
+                return {"ok": False, "error": "请先填写接口地址"}
+            if "model" in patch and not str(patch.get("model") or "").strip():
+                return {"ok": False, "error": "请先填写模型名称"}
+            if str(patch.get("base_url") or "").strip():
+                conf["base_url"] = normalize_base_url(patch["base_url"])
+            if str(patch.get("api_key") or "").strip():
+                conf["api_key"] = str(patch["api_key"]).strip()
+            if str(patch.get("model") or "").strip():
+                conf["model"] = str(patch["model"]).strip()
+            if patch.get("max_tokens"):
+                try:
+                    conf["max_tokens"] = int(patch["max_tokens"])
+                except (TypeError, ValueError):
+                    pass
+    else:
+        conf = dict(conf)
 
     if not conf["base_url"]:
         return {"ok": False, "error": "请先填写接口地址"}
@@ -346,6 +424,7 @@ def test_connection(patch=None):
         resp = _chat_request(
             conf, [{"role": "user", "content": "只回复两个字：就绪"}],
             stream=False, max_tokens=64, timeout=(12, 60),
+            allow_redirects=allow_redirects,
         )
         if resp.status_code != 200:
             detail = resp.text[:400]
@@ -488,13 +567,14 @@ def build_messages(plate):
 THINK_MARK = "\x01T"   # 思维链进度标记前缀，后接累计字数
 
 
-def stream_chat(messages, conf=None):
+def stream_chat(messages, conf=None, allow_redirects=True):
     """流式对话，返回生成器。产出正文；思维链进度以 "\\x01T<字数>" 标记产出。
 
     兼容性处理：
     - 响应头常不带 charset，手动按 UTF-8 解码，否则中文乱码；
     - 思考型模型先流 reasoning_content 再流 content，思考进度折算成标记；
-    - 连接中途被重置时由调用方（app.py）在「尚未输出正文」前提下重试。
+    - 连接中途被重置时由调用方（app.py）在「尚未输出正文」前提下重试；
+    - conf 显式传入时用于访客自带 Key，不读也不写本机配置。
     """
     conf = dict(conf or load_config())
     if not conf["api_key"] and not _is_local(conf["base_url"]):
@@ -502,7 +582,7 @@ def stream_chat(messages, conf=None):
     if not conf["model"]:
         raise RuntimeError("未配置模型名称，请在页面「模型接入」中填写")
 
-    resp = _chat_request(conf, messages, stream=True)
+    resp = _chat_request(conf, messages, stream=True, allow_redirects=allow_redirects)
     if resp.status_code != 200:
         detail = resp.text[:400]
         resp.close()

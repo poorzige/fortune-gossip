@@ -113,7 +113,7 @@ def meta():
         "categories": [{"key": k, "label": v["label"], "yongshen": v["yongshen"]}
                        for k, v in CATEGORIES.items()],
         "llm": conf,
-        "providers": llm.PROVIDERS if not PUBLIC_MODE else [],
+        "providers": llm.PROVIDERS,
     })
 
 
@@ -148,9 +148,16 @@ def llm_config_set():
 
 @app.post("/api/llm/test")
 def llm_test():
-    if PUBLIC_MODE:
-        return _locked_response()
     body = request.get_json(silent=True) or {}
+    if PUBLIC_MODE:
+        # 公开部署不碰服务器配置，只测访客自己填的接口；同样限流 + 防 SSRF
+        if _rate_limited():
+            return jsonify({"error": "测试太频繁，请稍后再试"}), 429
+        try:
+            conf = llm.byok_config(body.get("byok") or body)
+        except RuntimeError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify(llm.test_connection(conf=conf, allow_redirects=False))
     return jsonify(llm.test_connection(body))
 
 
@@ -243,16 +250,26 @@ def interpret_llm():
     rec = db.get_record(rid)
     if rec is None:
         return jsonify({"error": "记录不存在"}), 404
-    if not llm.is_configured():
-        msg = ("本站未开启 AI 解卦" if PUBLIC_MODE else
-               "尚未接入大模型：点击页面右上角「模型接入」填写接口地址与 API Key")
-        return jsonify({"error": msg}), 503
 
-    if PUBLIC_MODE and _rate_limited():
-        return jsonify({
-            "error": f"AI 解卦调用过于频繁，每个 IP {AI_RATE_WINDOW // 60} 分钟内"
-                     f"最多 {AI_RATE_LIMIT} 次，请稍后再试"
-        }), 429
+    byok = body.get("byok")
+    conf = None
+    strict = False
+    if PUBLIC_MODE:
+        if _rate_limited():
+            return jsonify({
+                "error": f"AI 解卦调用过于频繁，每个 IP {AI_RATE_WINDOW // 60} 分钟内"
+                         f"最多 {AI_RATE_LIMIT} 次，请稍后再试"
+            }), 429
+        if not isinstance(byok, dict):
+            return jsonify({"error": "本站不提供公共模型：请先点「接入我的 Key」，"
+                                     "填写你自己的接口地址与 API Key"}), 401
+        try:
+            conf = llm.byok_config(byok)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 400
+        strict = True
+    elif not llm.is_configured():
+        return jsonify({"error": "尚未接入大模型：点击页面右上角「模型接入」填写接口地址与 API Key"}), 503
 
     messages = llm.build_messages(rec["payload"])
 
@@ -265,7 +282,8 @@ def interpret_llm():
         last_error = None
         for attempt in range(3):
             try:
-                for text in llm.stream_chat(messages):
+                for text in llm.stream_chat(messages, conf=conf,
+                                            allow_redirects=not strict):
                     if text.startswith(llm.THINK_MARK):
                         yield text
                         continue

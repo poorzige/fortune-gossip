@@ -15,7 +15,7 @@
 | 六爻摇卦 | 三枚铜钱 3D 掷卦动画（手动六掷 / 自动），完整装卦：京房纳甲、六亲、六神、世应、动爻变卦、互卦、伏神、旬空、月破、六冲六合卦 |
 | 梅花易数 | 时间起卦（农历年支+月日+时辰）与数字起卦，本互变三卦展示，体用生克分析 |
 | 规则断卦 | 以用神（按问事类别：求财、姻缘、事业、考试、健康等 10 类）旺衰、日月生克冲合、动爻生克、进退神、回头生克、世应关系推演评分（0-100）与吉凶断语 |
-| AI 解卦 | 页面右上角「模型接入」即可接入任意 OpenAI 兼容接口（DeepSeek / 智谱 / Kimi / 通义 / OpenAI / 本地 Ollama …），带服务商预设、密钥脱敏、连通性测试、模型列表拉取；流式输出四节结构化解读，思维链进度实时显示、断线自动重试 |
+| AI 解卦 | 页面右上角「模型接入」即可接入任意 OpenAI 兼容接口（DeepSeek / 智谱 / Kimi / 通义 / OpenAI / 本地 Ollama …），带服务商预设、密钥脱敏、连通性测试、模型列表拉取；公开部署时切换为「访客自带 Key」，Key 只存浏览器、随请求临时转发。流式输出四节结构化解读，思维链进度实时显示、断线自动重试 |
 | 历史记录 | SQLite 自动保存每次起卦（时间、所问、卦象、断语、AI 解读），可回看、可删除 |
 
 ## 快速开始
@@ -90,13 +90,13 @@ Base URL / API Key / 模型名，先「测试连接」确认可用，再「保�
 1. 把仓库推到 GitHub（见下方[推到 GitHub](#推到-github)）；
 2. 打开 <https://render.com> → New → **Blueprint**，选中这个仓库；
    Render 会读根目录的 `render.yaml` 自动建服务；
-3. 想开放 AI 解卦，就在服务的 Environment 里填 `LLM_BASE_URL` / `LLM_API_KEY` /
-   `LLM_MODEL` 三个变量（不填则只有规则断卦，页面会自动隐藏 AI 入口）；
+3. AI 解卦走**访客自带 Key**：访客在页面上填自己的接口和 Key，只存在他自己的浏览器
+   （localStorage），随请求临时转发，站长不需要在服务器上放任何密钥，也就不会被人刷额度；
 4. 部署完拿到 `https://xxx.onrender.com` 就能访问。
 
 免费实例闲置一段时间会休眠，首次访问要等几十秒；实例重启后 SQLite 里的历史记录
-会被清空（免费层不提供持久磁盘）。要长期保存历史，挂一个 Persistent Disk 把
-`backend/data` 指过去，或改用下面的 Docker 方案。
+会被清空（免费层不提供持久磁盘）。要长期保存历史，挂一个 Persistent Disk，
+再用 `DB_PATH` 把数据库指过去（例如 `DB_PATH=/var/data/divination.db`）。
 
 ### 方式二：Docker（自己的服务器、NAS、Zeabur、Fly.io 都行）
 
@@ -104,15 +104,22 @@ Base URL / API Key / 模型名，先「测试连接」确认可用，再「保�
 docker build -t bagua-mingpan .
 docker run -d -p 8000:8000 \
   -e PUBLIC_MODE=1 \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-你的Key \
-  -e LLM_MODEL=deepseek-chat \
+  -e DB_PATH=/app/backend/data/divination.db \
   -v $(pwd)/data:/app/backend/data \
   --name bagua \
   bagua-mingpan
 ```
 
 `-v` 把 SQLite 挂在宿主机上，容器重建也不丢历史。
+
+这套是「访客自带 Key」模式，容器里不放任何密钥。如果是自己一个人用、想让服务器
+统一用一个 Key，去掉 `PUBLIC_MODE`，再加上：
+
+```bash
+  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
+  -e LLM_API_KEY=sk-你的Key \
+  -e LLM_MODEL=deepseek-chat \
+```
 
 ### 方式三：Railway / Heroku 这类平台
 
@@ -123,12 +130,27 @@ docker run -d -p 8000:8000 \
 | 变量 | 作用 |
 | --- | --- |
 | `PORT` / `HOST` | 监听端口与地址，平台一般自动注入 |
-| `PUBLIC_MODE=1` | **公开部署必开**：锁死 `/api/llm/config`、`/api/llm/test`、`/api/llm/models`，防止访客改你的模型地址（那也是个 SSRF 口子）或刷爆你的额度；同时对 AI 解卦按 IP 限流 |
+| `PUBLIC_MODE=1` | **公开部署必开**：锁死 `/api/llm/config`、`/api/llm/models`，模型只能由访客自带 Key；同时对 AI 解卦按 IP 限流，并挡掉指向内网/本机的接口地址（防 SSRF） |
 | `AI_RATE_LIMIT` / `AI_RATE_WINDOW` | 限流阈值，默认每个 IP 600 秒 5 次 |
-| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 覆盖 `config.json`，优先级最高；生产环境请用这个而不是提交配置文件 |
+| `DB_PATH` | SQLite 文件路径，默认 `backend/data/divination.db`；挂载持久盘时指过去 |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 只有**非公开**部署（自己用、局域网）才需要：服务器统一用一个 Key，访客不用填 |
 
 **千万别把 `backend/config.json` 提交上去**——`.gitignore` 已经把它和 `data/*.db`
 挡掉了。如果曾经提交过，先去服务商后台吊销那个 Key。
+
+## 推到 GitHub
+
+仓库：<https://github.com/poorzige/fortune-gossip>
+
+```bash
+git remote add origin https://github.com/poorzige/fortune-gossip.git  # 已配好可跳过
+git branch -M main
+git push -u origin main
+```
+
+GitHub 从 2021 年起不接受账号密码，首次 push 请用 **Personal Access Token**
+（Settings → Developer settings → Tokens，勾 `repo`）当密码，或者用
+GitHub Desktop / 配好 SSH key。
 
 ## API 一览
 
