@@ -23,6 +23,7 @@ API:
 
 运行：python app.py  （默认 http://127.0.0.1:8000）
 """
+import gzip
 import os
 import threading
 import time
@@ -48,6 +49,63 @@ app = Flask(__name__, static_folder=None)
 CORS(app)  # 前后端分离：允许本地其他端口/静态服务跨域调用
 
 db.init_db()
+
+
+# ---------------- 传输优化 ----------------
+# 免费实例带宽小、跨洋 RTT 高：CSS/JS 压缩后约原来的 1/4，
+# 三个文件合计 93KB → 24KB，首屏在弱网下差别明显。
+_COMPRESSIBLE = ("text/", "application/javascript", "application/json",
+                 "application/xml", "image/svg+xml")
+_CACHE_RULES = {
+    ".css": "public, max-age=600",
+    ".js": "public, max-age=600",
+    ".jpg": "public, max-age=86400",
+    ".png": "public, max-age=86400",
+    ".svg": "public, max-age=86400",
+    ".ico": "public, max-age=86400",
+    ".woff2": "public, max-age=31536000, immutable",
+}
+
+
+@app.after_request
+def _tune_response(resp):
+    path = request.path
+    ctype = resp.mimetype or ""
+
+    # 静态资源给缓存，HTML 与接口不缓存（保证改完代码立刻生效）
+    ext = os.path.splitext(path)[1].lower()
+    if resp.status_code == 200 and ext in _CACHE_RULES:
+        resp.headers["Cache-Control"] = _CACHE_RULES[ext]
+    elif not path.startswith("/api/") and resp.status_code == 200 and ext in ("", ".html"):
+        resp.headers["Cache-Control"] = "no-cache"
+
+    # 流式响应（AI 解卦 SSE）不能压缩，否则整段会被缓冲住。
+    # 静态文件是 send_file 的直通响应（direct_passthrough），要先把文件读成
+    # 序列才能压缩，所以这两种要分开判断。
+    if resp.status_code >= 300 or request.method == "HEAD":
+        return resp
+    if resp.headers.get("Content-Encoding"):
+        return resp
+    if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
+        return resp
+    if not any(ctype.startswith(p) for p in _COMPRESSIBLE):
+        return resp
+    if resp.direct_passthrough:
+        if (resp.content_length or 0) < 512:
+            return resp
+        resp.direct_passthrough = False  # 允许 get_data() 读取文件内容
+    elif resp.is_streamed:
+        return resp
+
+    data = resp.get_data()
+    if len(data) < 512:
+        return resp
+
+    resp.set_data(gzip.compress(data, 6))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Content-Length"] = str(len(resp.get_data()))
+    resp.headers["Vary"] = "Accept-Encoding"
+    return resp
 
 
 # ---------------- 工具 ----------------
