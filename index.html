@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#f2e9d5">
+<meta name="description" content="六爻纳甲与梅花易数排盘，含规则断卦与可自接入大模型的 AI 解卦。">
+<title>八卦命盘 · 六爻梅花占</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+<aside class="side-verse left" aria-hidden="true">觀象玩辭</aside>
+<aside class="side-verse right" aria-hidden="true">占事知來</aside>
+
+<header class="site-header">
+  <div class="header-halo" aria-hidden="true"></div>
+  <div class="header-tools">
+    <button id="llmChip" class="llm-chip" type="button" title="查看或更换已接入的模型">
+      <i class="dot"></i><span id="llmChipText">检测模型…</span>
+    </button>
+    <button id="btnOpenLLM" class="settings-btn" type="button">
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M19.4 13.5a7.9 7.9 0 0 0 0-3l1.7-1.3-1.9-3.3-2 .8a7.7 7.7 0 0 0-2.6-1.5L14.3 3h-3.8l-.3 2.2a7.7 7.7 0 0 0-2.6 1.5l-2-.8L3.7 9.2l1.7 1.3a7.9 7.9 0 0 0 0 3l-1.7 1.3 1.9 3.3 2-.8a7.7 7.7 0 0 0 2.6 1.5l.3 2.2h3.8l.3-2.2a7.7 7.7 0 0 0 2.6-1.5l2 .8 1.9-3.3-1.7-1.3Z"
+              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+      </svg>
+      <span>模型接入</span>
+    </button>
+  </div>
+
+  <div class="brand">
+    <div class="bagua-row" aria-hidden="true">
+      <span style="--i:0">☰</span><span style="--i:1">☱</span><span style="--i:2">☲</span><span style="--i:3">☳</span>
+      <span style="--i:4">☴</span><span style="--i:5">☵</span><span style="--i:6">☶</span><span style="--i:7">☷</span>
+    </div>
+    <h1>八卦命盘</h1>
+    <p class="subtitle">六爻纳甲 · 梅花易数 · 起卦问事</p>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="main-col">
+
+    <!-- 问事设置 -->
+    <div class="card ask-card reveal">
+      <h2 class="card-title"><span>问 事</span></h2>
+      <p class="card-lead">静心凝神，把所问之事写清楚。同一事短期不必反复占问。</p>
+
+      <div class="ask-form">
+        <input id="question" type="text" maxlength="60"
+               placeholder="心中所问之事（如：近期换工作是否可行）" autocomplete="off">
+        <select id="category" title="问事类别" aria-label="问事类别"></select>
+      </div>
+
+      <div class="method-tabs" id="methodTabs" style="--tab-index:0" role="tablist">
+        <span class="tab-glider" aria-hidden="true"></span>
+        <button class="tab active" data-method="liuyao" role="tab" aria-selected="true">六爻摇卦</button>
+        <button class="tab" data-method="meihua" role="tab" aria-selected="false">梅花易数</button>
+      </div>
+
+      <!-- 六爻面板 -->
+      <div id="panel-liuyao" class="method-panel">
+        <div class="cast-area">
+          <div class="coin-stage" id="coinStage">
+            <div class="coins" id="coins">
+              <div class="coin-wrap"><div class="coin"><div class="face front"><span class="ch t">元</span><span class="ch b">利</span><span class="ch l">亨</span><span class="ch r">贞</span></div><div class="face back"><i class="arc a1"></i><i class="arc a2"></i></div></div></div>
+              <div class="coin-wrap"><div class="coin"><div class="face front"><span class="ch t">元</span><span class="ch b">利</span><span class="ch l">亨</span><span class="ch r">贞</span></div><div class="face back"><i class="arc a1"></i><i class="arc a2"></i></div></div></div>
+              <div class="coin-wrap"><div class="coin"><div class="face front"><span class="ch t">元</span><span class="ch b">利</span><span class="ch l">亨</span><span class="ch r">贞</span></div><div class="face back"><i class="arc a1"></i><i class="arc a2"></i></div></div></div>
+            </div>
+            <div class="coin-shadow" aria-hidden="true"></div>
+            <div class="cast-progress" id="castProgress">静心凝神，默念所问，点击掷卦</div>
+          </div>
+          <div class="cast-hex-wrap">
+            <div class="cast-hex" id="castHex" aria-hidden="true"></div>
+            <div class="cast-hex-label">六 爻</div>
+          </div>
+        </div>
+        <div class="cast-actions">
+          <button id="btnCastOnce" class="btn primary">掷 卦</button>
+          <button id="btnCastAuto" class="btn">自动六掷</button>
+          <button id="btnCastReset" class="btn ghost">重 掷</button>
+        </div>
+        <p class="tip">铜钱有字一面为「字」记二，无字一面为「背」记三。三枚合数：
+          九为老阳 ○（动）、六为老阴 ✕（动）、七为少阳、八为少阴。</p>
+      </div>
+
+      <!-- 梅花面板 -->
+      <div id="panel-meihua" class="method-panel hidden">
+        <div class="meihua-actions">
+          <button id="btnMeihuaTime" class="btn primary">以此时辰起卦</button>
+          <div class="divider-v"></div>
+          <div class="num-cast">
+            <input id="num1" type="number" min="1" max="999999999" placeholder="第一数" aria-label="第一数">
+            <span class="num-dot">·</span>
+            <input id="num2" type="number" min="1" max="999999999" placeholder="第二数" aria-label="第二数">
+            <button id="btnMeihuaNumber" class="btn">数字起卦</button>
+          </div>
+        </div>
+        <p class="tip">时间起卦：农历年支数加月日，除八取余为上卦；再加时辰数除八为下卦；
+          总数除六为动爻。数字起卦：两数各自除八定上下卦，两数之和除六定动爻。</p>
+      </div>
+    </div>
+
+    <!-- 结果区 -->
+    <div id="result" class="hidden">
+
+      <div class="card plate-head-card" id="plateHead"></div>
+      <div class="card" id="plateCard"></div>
+      <div class="card" id="textCard"></div>
+
+      <div class="card" id="interpCard">
+        <h2 class="card-title"><span>卦 理 断 语</span></h2>
+        <div id="interpBody"></div>
+      </div>
+
+      <div class="card ai-card" id="aiCard">
+        <h2 class="card-title"><span>AI 解 卦</span></h2>
+        <div id="aiBody"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <aside class="side-col">
+    <div class="card history-card reveal">
+      <h2 class="card-title"><span>占 卜 履 历</span></h2>
+      <ul id="historyList" class="history-list"></ul>
+    </div>
+    <div class="card about-card reveal">
+      <h2 class="card-title"><span>使 用 说 明</span></h2>
+      <div class="about-body">
+        <p>六爻以用神旺衰、日月动静断吉凶；梅花以体用生克断趋势。断语由规则引擎推演，可解释、可复核。</p>
+        <p>本页是纯静态版：排盘与断卦全部在你的浏览器里算完，无需服务器。
+          AI 解卦用你自己的 Key 直连服务商（DeepSeek、Kimi、通义等 OpenAI 兼容接口），
+          密钥只保存在这台浏览器，不会上传到任何地方；占卜记录也存在本机。</p>
+        <p class="disclaimer">本盘仅供传统文化研究与娱乐参考，不构成医疗、投资、法律等任何现实决策依据。</p>
+      </div>
+    </div>
+  </aside>
+
+</main>
+
+<footer class="site-footer">
+  <span>䷀ 乾以易知 · 坤以简能 ䷁</span>
+</footer>
+
+<!-- ============ 模型接入 ============ -->
+<div class="modal-layer" id="llmModal" aria-hidden="true">
+  <div class="modal-mask" data-close></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="llmTitle">
+    <header class="modal-head">
+      <div class="modal-titles">
+        <h2 id="llmTitle">接 入 大 模 型</h2>
+        <p class="modal-sub">任何 OpenAI 兼容接口均可。配置保存在本机 <code>backend/config.json</code>，密钥不回传浏览器。</p>
+      </div>
+      <button class="icon-btn" id="llmClose" type="button" aria-label="关闭">✕</button>
+    </header>
+
+    <div class="modal-body">
+      <div class="field">
+        <label>服务商预设</label>
+        <div class="providers" id="providerGrid"></div>
+      </div>
+
+      <div class="field">
+        <label for="llmBase">接口地址 Base URL</label>
+        <input id="llmBase" type="text" placeholder="https://api.deepseek.com/v1"
+               autocomplete="off" spellcheck="false">
+        <p class="field-hint">只填到 <code>/v1</code> 这一层，不要带 <code>/chat/completions</code>。</p>
+      </div>
+
+      <div class="field">
+        <label for="llmKey">API Key</label>
+        <div class="field-row">
+          <input id="llmKey" type="password" placeholder="填写新的 Key；留空表示保持已保存的密钥"
+                 autocomplete="off" spellcheck="false">
+          <button class="mini-btn" id="llmEye" type="button">显示</button>
+        </div>
+        <p class="field-hint" id="llmKeyHint">尚未保存密钥</p>
+      </div>
+
+      <div class="field">
+        <label for="llmModel">模型名称</label>
+        <div class="field-row">
+          <input id="llmModel" type="text" list="llmModelList" placeholder="deepseek-chat"
+                 autocomplete="off" spellcheck="false">
+          <button class="mini-btn" id="llmFetchModels" type="button">拉取列表</button>
+        </div>
+        <datalist id="llmModelList"></datalist>
+      </div>
+
+      <details class="adv">
+        <summary>高级参数</summary>
+        <div class="adv-grid">
+          <div class="field">
+            <label for="llmTemp">温度 temperature</label>
+            <div class="range-row">
+              <input id="llmTemp" type="range" min="0" max="1.5" step="0.1" value="0.7">
+              <output id="llmTempOut">0.7</output>
+            </div>
+          </div>
+          <div class="field">
+            <label for="llmMax">max_tokens</label>
+            <input id="llmMax" type="number" min="64" max="200000" step="64" value="8192">
+            <p class="field-hint">思考型模型需容纳思维链，建议 8192 以上。</p>
+          </div>
+        </div>
+        <label class="switch-row">
+          <input type="checkbox" id="llmThinking" checked>
+          <span>尝试关闭思维链（仅 NVIDIA NIM 一类网关支持）</span>
+        </label>
+      </details>
+
+      <div class="modal-msg" id="llmMsg" role="status" aria-live="polite"></div>
+    </div>
+
+    <footer class="modal-foot">
+      <button class="btn ghost" id="llmTest" type="button">测试连接</button>
+      <button class="btn primary" id="llmSave" type="button">保存并启用</button>
+    </footer>
+  </div>
+</div>
+
+<script src="js/vendor/lunar.js"></script>
+<script type="module" src="js/local-api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
