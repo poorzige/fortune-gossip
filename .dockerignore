@@ -1,0 +1,15 @@
+.git
+.gitignore
+.workbuddy
+__pycache__
+**/__pycache__
+*.pyc
+backend/config.json
+backend/data/*.db
+.venv
+venv
+.vscode
+.idea
+docs
+*.md
+!README.md

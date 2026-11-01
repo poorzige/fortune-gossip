@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bagua-mingpan
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r backend/requirements.txt
+    # 单进程多线程：SQLite 单文件，多 worker 并发写会锁库
+    startCommand: cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 600
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # 公开部署：锁定模型配置接口 + AI 限流
+      - key: PUBLIC_MODE
+        value: "1"
+      # 想给访客开放 AI，就在 Render 后台填这三项（不填则只有规则断卦）
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
